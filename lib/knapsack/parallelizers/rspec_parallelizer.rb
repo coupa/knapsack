@@ -53,7 +53,12 @@ module Knapsack::Parallelizer
         interval_s = (ENV['PARALLEL_LAUNCH_INTERVAL'] || 0).to_f
         sleep(index * interval_s) if interval_s > 0 && index > 0
 
-        status = Knapsack::Util.run_cmd("#{'TC_PARALLEL_ID='+fork_identifier if index > 0} bundle exec rspec -r turnip/rspec -r turnip/capybara #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        status = if ENV['ENABLE_BELUGA'] == 'true' && ENV['JS_DRIVER'] == 'selenium-chrome'
+          path = Knapsack::Util.teamcity_plugin_path
+          Knapsack::Util.run_cmd("#{"TC_PLUGIN_PATH=#{path}" if Dir.exists?(path)} #{'TC_PARALLEL_ID='+fork_identifier if index > 0} beluga -X=--name -X=beluga_#{ENV['BUILD_NUMBER']}#{fork_identifier if index > 0} turnip #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        else
+          Knapsack::Util.run_cmd("#{'TC_PARALLEL_ID='+fork_identifier if index > 0} bundle exec rspec -r turnip/rspec -r turnip/capybara #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        end
         unless status
           code = $?
           open('tmp/error_forked_rspec', 'a') do |f|
@@ -74,6 +79,9 @@ module Knapsack::Parallelizer
         clean_up_processes
         clean_up_databases
         clean_up_logs
+        if ENV['ENABLE_BELUGA'] == 'true' && ENV['JS_DRIVER'] == 'selenium-chrome'
+          Knapsack::Util.run_cmd("docker rm -f beluga_#{ENV['BUILD_NUMBER']}")
+        end
       end
 
       protected
@@ -128,6 +136,9 @@ module Knapsack::Parallelizer
         return if num <= 1
         db_config = YAML.load(ERB.new(File.read('config/database.yml')).result)['test']
         (num - 1).times do |i|
+          if ENV['ENABLE_BELUGA'] == 'true' && ENV['JS_DRIVER'] == 'selenium-chrome'
+            Knapsack::Util.run_cmd("docker rm -f beluga_#{ENV['BUILD_NUMBER']}#{identifier}#{i + 1}")
+          end
           db_name = "#{db_config['database']}#{identifier}#{i + 1}"
           begin
             Knapsack::Util.run_cmd("mysqladmin #{db_options(db_config)} -f drop #{db_name}")

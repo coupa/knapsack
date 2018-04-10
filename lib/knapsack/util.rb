@@ -1,6 +1,5 @@
 module Knapsack::Util
   class << self
-
     def run_cmd(cmd)
       puts cmd if to_bool(ENV['VERBOSE'])
       system(cmd)
@@ -14,5 +13,13 @@ module Knapsack::Util
       !x.nil?
     end
 
+    # On Teamcity the current working directory is:
+    # teamcity_agent/work/xxxxxxx/
+    # The Teamcity Ruby plugin is:
+    # teamcity_agent/plugins/rake-runner/rb
+    # Hence reference to the plugin from current direcoty is "../../plugins/rake-runner/rb"
+    def teamcity_plugin_path
+      File.expand_path("../../plugins/rake-runner/rb", Dir.pwd)
+    end
   end
 end
