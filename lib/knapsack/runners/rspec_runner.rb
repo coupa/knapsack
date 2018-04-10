@@ -31,9 +31,10 @@ module Knapsack
           cmd = 'true'
           puts 'No tests to run, check knapsack_all_tests_file_names'
         else
-          cmd = %Q[bundle exec rspec -r turnip/rspec -r turnip/capybara #{args}  #{allocator.stringify_node_tests}]
+          tc_plugin = Knapsack::Util.teamcity_plugin_path
+          cmd = build_rspec_command(allocator, args)
         end
-        system(cmd)
+        Knapsack::Util.run_cmd(cmd)
         exit($?.exitstatus)
       end
 
@@ -58,7 +59,25 @@ module Knapsack
       end
 
       def self.skip_parallel?
-        ENV['JS_DRIVER'] == 'selenium-ie-remote' || Knapsack::Util.to_bool(ENV['SKIP_PARALLEL'])
+        ENV['JS_DRIVER'] == 'selenium-ie-remote' || Knapsack::Util.to_bool(ENV['SKIP_PARALLEL']) || ENV['ENABLE_LIGHTNING'] == 'true'
+      end
+
+      def self.build_rspec_command(allocator, args)
+        tc_plugin = Knapsack::Util.teamcity_plugin_path
+        if Knapsack::Util.beluga_enabled?
+          tc_plugin_path = Dir.exists?(tc_plugin) ? "TC_PLUGIN_PATH=#{tc_plugin}" : ''
+          envs = "TEST_ENV_NUM=#{max_process_count} #{tc_plugin_path}"
+          # Give the container a name "beluga_xxxx" so that the clean up step can
+          # remove the container if it did not finish and quit
+          "#{envs} beluga -X=--name -X=beluga_#{ENV['BUILD_NUMBER']} turnip #{args} #{allocator.stringify_node_tests}"
+        elsif Knapsack::Util.lightning_enabled?
+          # Running lightning without beluga
+          opts = Dir.exists?(tc_plugin) ? "ADDITIONAL_RSPEC_OPTS='-I #{tc_plugin}/patch/common -I #{tc_plugin}/patch/testunit -I #{tc_plugin}/patch/bdd --deprecation-out tmp/artifacts/deprecations.log'" : ''
+          envs = "TEST_ENV_NUM=#{max_process_count} #{opts}"
+          "#{envs} script/docker/turnip #{args} #{allocator.stringify_node_tests}"
+        else
+          %Q[bundle exec rspec -r turnip/rspec -r turnip/capybara #{args}  #{allocator.stringify_node_tests}]
+        end
       end
     end
   end
