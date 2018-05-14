@@ -15,8 +15,12 @@ module Knapsack::Parallelizer
         # This file will be read and used in clean_up
         system("echo #{worker_count},#{identifier} > tmp/parallel_identifier.txt")
 
-        setup(worker_count, identifier, options)
-        run_tests(test_slices, identifier, options)
+        db_config = YAML.load(ERB.new(File.read('config/database.yml')).result)['test']
+        `mkdir tmp/cache`
+        filename = "tmp/cache/testdb.sql"
+        Knapsack::Util.run_cmd("mysqldump #{db_options(db_config)} #{db_config['database']} > #{filename}")
+
+        run_tests(test_slices, identifier, db_config, options)
       rescue => e
         puts e.message
         puts e.backtrace.join("\n\t")
@@ -49,7 +53,12 @@ module Knapsack::Parallelizer
         interval_s = (ENV['PARALLEL_LAUNCH_INTERVAL'] || 0).to_f
         sleep(index * interval_s) if interval_s > 0 && index > 0
 
-        status = Knapsack::Util.run_cmd("#{'TC_PARALLEL_ID='+fork_identifier if index > 0} bundle exec rspec -r turnip/rspec -r turnip/capybara #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        status = if ENV['ENABLE_BELUGA'] == 'true' && ENV['JS_DRIVER'] == 'selenium-chrome'
+          path = Knapsack::Util.teamcity_plugin_path
+          Knapsack::Util.run_cmd("#{"TC_PLUGIN_PATH=#{path}" if Dir.exists?(path)} #{'TC_PARALLEL_ID='+fork_identifier if index > 0} beluga -X=--name -X=beluga_#{ENV['BUILD_NUMBER']}#{fork_identifier if index > 0} turnip #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        else
+          Knapsack::Util.run_cmd("#{'TC_PARALLEL_ID='+fork_identifier if index > 0} bundle exec rspec -r turnip/rspec -r turnip/capybara #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        end
         unless status
           code = $?
           open('tmp/error_forked_rspec', 'a') do |f|
@@ -66,29 +75,13 @@ module Knapsack::Parallelizer
         puts(failures.present? ? "Failed files:\n#{failures}" : "All test files passed")
       end
 
-      # Duplicating test databases for forks other than the first one, since the first fork uses
-      # the main database (the one we are duplicating from, without the added identifier)
-      def setup(num, identifier, options = {})
-        return if num <= 1
-        db_config = YAML.load(ERB.new(File.read('config/database.yml')).result)['test']
-
-        filename = "tmp/testdb.sql"
-        options = db_options(db_config)
-        Knapsack::Util.run_cmd("mysqldump #{options} #{db_config['database']} > #{filename}")
-
-        # The first process will use the origin/main database, instead of one that is
-        # appeneded with additional index. Hence the (num - 1) here
-        (num - 1).times do |i|
-          db_name = "#{db_config['database']}#{identifier}#{i + 1}"
-          Knapsack::Util.run_cmd("mysqladmin #{options} create #{db_name}")
-          Knapsack::Util.run_cmd("mysql #{options} #{db_name} < #{filename}")
-        end
-      end
-
       def clean_up
         clean_up_processes
         clean_up_databases
         clean_up_logs
+        if ENV['ENABLE_BELUGA'] == 'true' && ENV['JS_DRIVER'] == 'selenium-chrome'
+          Knapsack::Util.run_cmd("docker rm -f beluga_#{ENV['BUILD_NUMBER']}")
+        end
       end
 
       protected
@@ -97,7 +90,7 @@ module Knapsack::Parallelizer
       # run parallely by a process.
       # identifier is the current process's identifier that will be used to further
       # distinguish each fork's database name.
-      def run_tests(test_slices, identifier, options = {})
+      def run_tests(test_slices, identifier, db_config, options = {})
         worker_count = test_slices.length
         options[:time] = Time.now
         if worker_count > 1
@@ -105,6 +98,14 @@ module Knapsack::Parallelizer
           worker_count.times do |i|
             pids << fork do
               begin
+                if i > 0
+                  filename = "tmp/cache/testdb.sql"
+                  db_name = "#{db_config['database']}#{identifier}#{i}"
+
+                  sql = "CREATE DATABASE #{db_name}; USE #{db_name}; SOURCE #{filename};"
+                  Knapsack::Util.run_cmd("mysql #{db_options(db_config)} -e \"#{sql}\"")
+                end
+
                 test(test_slices, i, identifier, options)
               ensure
                 system("rm tmp/parallel_pids/#{Process.pid}")
@@ -135,6 +136,9 @@ module Knapsack::Parallelizer
         return if num <= 1
         db_config = YAML.load(ERB.new(File.read('config/database.yml')).result)['test']
         (num - 1).times do |i|
+          if ENV['ENABLE_BELUGA'] == 'true' && ENV['JS_DRIVER'] == 'selenium-chrome'
+            Knapsack::Util.run_cmd("docker rm -f beluga_#{ENV['BUILD_NUMBER']}#{identifier}#{i + 1}")
+          end
           db_name = "#{db_config['database']}#{identifier}#{i + 1}"
           begin
             Knapsack::Util.run_cmd("mysqladmin #{db_options(db_config)} -f drop #{db_name}")
