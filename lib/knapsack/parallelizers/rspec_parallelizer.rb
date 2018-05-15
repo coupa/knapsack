@@ -1,3 +1,5 @@
+require 'fileutils'
+
 module Knapsack::Parallelizer
   class RSpecParallelizer
     class << self
@@ -16,7 +18,7 @@ module Knapsack::Parallelizer
         system("echo #{worker_count},#{identifier} > tmp/parallel_identifier.txt")
 
         db_config = YAML.load(ERB.new(File.read('config/database.yml')).result)['test']
-        `mkdir tmp/cache` unless Dir.exists?('tmp/cache')
+        FileUtils.mkdir_p('tmp/cache') unless Dir.exists?('tmp/cache')
         filename = "tmp/cache/testdb.sql"
         Knapsack::Util.run_cmd("mysqldump #{db_options(db_config)} #{db_config['database']} > #{filename}")
 
@@ -53,7 +55,12 @@ module Knapsack::Parallelizer
         interval_s = (ENV['PARALLEL_LAUNCH_INTERVAL'] || 0).to_f
         sleep(index * interval_s) if interval_s > 0 && index > 0
 
-        status = Knapsack::Util.run_cmd("#{'TC_PARALLEL_ID='+fork_identifier if index > 0} bundle exec rspec -r turnip/rspec -r turnip/capybara #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        status = if Knapsack::Util.beluga_enabled?
+          path = Knapsack::Util.teamcity_plugin_path
+          Knapsack::Util.run_cmd("#{"TC_PLUGIN_PATH=#{path}" if Dir.exists?(path)} #{'TC_PARALLEL_ID='+fork_identifier if index > 0} beluga -X=--name -X=beluga_#{ENV['BUILD_NUMBER']}#{fork_identifier if index > 0} turnip #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        else
+          Knapsack::Util.run_cmd("#{'TC_PARALLEL_ID='+fork_identifier if index > 0} bundle exec rspec -r turnip/rspec -r turnip/capybara #{options[:args]} #{test_slices[index].join(' ')} > #{log_file}")
+        end
         unless status
           code = $?
           open('tmp/error_forked_rspec', 'a') do |f|
@@ -72,7 +79,7 @@ module Knapsack::Parallelizer
 
       def clean_up
         clean_up_processes
-        clean_up_databases
+        clean_up_parallel
         clean_up_logs
       end
 
@@ -124,10 +131,14 @@ module Knapsack::Parallelizer
 
       # Clean up the duplicated databases but not the main one, which will be dropped
       # in a later step.
-      def clean_up_dbs(num, identifier)
+      # Clean up the docker containers
+      def clean_up_by_identifiers(num, identifier)
         return if num <= 1
         db_config = YAML.load(ERB.new(File.read('config/database.yml')).result)['test']
         (num - 1).times do |i|
+          if Knapsack::Util.beluga_enabled?
+            Knapsack::Util.run_cmd("docker rm -f beluga_#{ENV['BUILD_NUMBER']}#{identifier}#{i + 1}")
+          end
           db_name = "#{db_config['database']}#{identifier}#{i + 1}"
           begin
             Knapsack::Util.run_cmd("mysqladmin #{db_options(db_config)} -f drop #{db_name}")
@@ -171,13 +182,15 @@ module Knapsack::Parallelizer
         system("rm -Rf tmp/parallel_pids")
       end
 
-      def clean_up_databases
+      def clean_up_parallel
+        Knapsack::Util.run_cmd("docker rm -f beluga_#{ENV['BUILD_NUMBER']}") if Knapsack::Util.beluga_enabled?
         return unless File.exist?('tmp/parallel_identifier.txt')
+        
         data = `cat tmp/parallel_identifier.txt`
         unless data.empty?
           puts "Cleaning up the duplicated database(s): #{data}"
           values = data.strip.split(',')
-          clean_up_dbs(values[0].to_i, values[1])
+          clean_up_by_identifiers(values[0].to_i, values[1])
         end
         system("rm -f tmp/parallel_identifier.txt")
       end
