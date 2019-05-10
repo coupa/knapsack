@@ -7,6 +7,7 @@ require_relative 'knapsack/logger'
 require_relative 'knapsack/tracker'
 require_relative 'knapsack/presenter'
 require_relative 'knapsack/report'
+require_relative 'knapsack/worker_report'
 require_relative 'knapsack/allocator'
 require_relative 'knapsack/allocator_builder'
 require_relative 'knapsack/task_loader'
@@ -33,6 +34,10 @@ module Knapsack
 
     def report
       Knapsack::Report.instance
+    end
+
+    def worker_report
+      Knapsack::WorkerReport.instance
     end
 
     def root
